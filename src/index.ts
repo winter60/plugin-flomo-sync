@@ -1,717 +1,579 @@
 import {
-    Plugin,
-    showMessage,
-    confirm,
-    Dialog,
-    Menu,
-    openTab,
-    adaptHotkey,
-    getFrontend,
-    getBackend,
-    IModel,
-    Protyle,
-    openWindow,
-    IOperation,
-    Constants
+  Plugin,
+  fetchPost,
+  fetchSyncPost,
+  openTab,
+  Setting,
+  openMobileFileById,
+  getFrontend
 } from "siyuan";
 import "@/index.scss";
+import { Md5 } from "ts-md5";
+import TurndownService from 'turndown';
+import moment from "moment";
+
+let onSyncEndEvent: EventListener;
+const STORAGE_NAME = "flomo-sync-config";
+const FLOMO_ASSETS_DIR = "/assets/flomo";
+const USG = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36 Edg/116.0.1938.76";
 
 
-import { SettingUtils } from "./libs/setting-utils";
-const STORAGE_NAME = "menu-config";
-const TAB_TYPE = "custom_tab";
-const DOCK_TYPE = "dock_tab";
+export default class FlomoSync extends Plugin {
+  private isMobile: boolean;
+  private siyuanStorage;
+  private syncing: boolean = false;
+  async pushMsg(msg) {
+    fetchPost("/api/notification/pushMsg", { msg: msg });
+  }
 
-export default class PluginSample extends Plugin {
+  async pushErrMsg(msg) {
+    fetchPost("/api/notification/pushErrMsg", { msg: msg });
+  }
 
-    private customTab: () => IModel;
-    private isMobile: boolean;
-    private blockIconEventBindThis = this.blockIconEvent.bind(this);
-    private settingUtils: SettingUtils;
+  async getLocalStorage() {
+    return await fetchSyncPost("/api/storage/getLocalStorage");
+  }
 
-    async onload() {
-        this.data[STORAGE_NAME] = { readonlyText: "Readonly" };
+  /**
+   * 获取所有记录：上次同步时间作为起点
+   */
+  async getLatestMemos() {
+    let allRecords = [];
+    let syncSuccessTag = this.data[STORAGE_NAME]["syncSuccessTag"]
+    let lastSyncTime = this.data[STORAGE_NAME]["lastSyncTime"]
 
-        console.log("loading plugin-sample", this.i18n);
+    const limit = 200;
+    let today = new Date();
+    //只能是指定时间或今天00:00:00
+    let latest_updated = moment(lastSyncTime, 'YYYY-MM-DD HH:mm:ss').toDate()
+      || moment(today, 'YYYY-MM-DD 00:00:00').toDate()
+    let latest_updated_at_timestamp;
 
-        const frontEnd = getFrontend();
-        this.isMobile = frontEnd === "mobile" || frontEnd === "browser-mobile";
-        // 图标的制作参见帮助文档
-        this.addIcons(`<symbol id="iconFace" viewBox="0 0 32 32">
-<path d="M13.667 17.333c0 0.92-0.747 1.667-1.667 1.667s-1.667-0.747-1.667-1.667 0.747-1.667 1.667-1.667 1.667 0.747 1.667 1.667zM20 15.667c-0.92 0-1.667 0.747-1.667 1.667s0.747 1.667 1.667 1.667 1.667-0.747 1.667-1.667-0.747-1.667-1.667-1.667zM29.333 16c0 7.36-5.973 13.333-13.333 13.333s-13.333-5.973-13.333-13.333 5.973-13.333 13.333-13.333 13.333 5.973 13.333 13.333zM14.213 5.493c1.867 3.093 5.253 5.173 9.12 5.173 0.613 0 1.213-0.067 1.787-0.16-1.867-3.093-5.253-5.173-9.12-5.173-0.613 0-1.213 0.067-1.787 0.16zM5.893 12.627c2.28-1.293 4.040-3.4 4.88-5.92-2.28 1.293-4.040 3.4-4.88 5.92zM26.667 16c0-1.040-0.16-2.040-0.44-2.987-0.933 0.2-1.893 0.32-2.893 0.32-4.173 0-7.893-1.92-10.347-4.92-1.4 3.413-4.187 6.093-7.653 7.4 0.013 0.053 0 0.12 0 0.187 0 5.88 4.787 10.667 10.667 10.667s10.667-4.787 10.667-10.667z"></path>
-</symbol>
-<symbol id="iconSaving" viewBox="0 0 32 32">
-<path d="M20 13.333c0-0.733 0.6-1.333 1.333-1.333s1.333 0.6 1.333 1.333c0 0.733-0.6 1.333-1.333 1.333s-1.333-0.6-1.333-1.333zM10.667 12h6.667v-2.667h-6.667v2.667zM29.333 10v9.293l-3.76 1.253-2.24 7.453h-7.333v-2.667h-2.667v2.667h-7.333c0 0-3.333-11.28-3.333-15.333s3.28-7.333 7.333-7.333h6.667c1.213-1.613 3.147-2.667 5.333-2.667 1.107 0 2 0.893 2 2 0 0.28-0.053 0.533-0.16 0.773-0.187 0.453-0.347 0.973-0.427 1.533l3.027 3.027h2.893zM26.667 12.667h-1.333l-4.667-4.667c0-0.867 0.12-1.72 0.347-2.547-1.293 0.333-2.347 1.293-2.787 2.547h-8.227c-2.573 0-4.667 2.093-4.667 4.667 0 2.507 1.627 8.867 2.68 12.667h2.653v-2.667h8v2.667h2.68l2.067-6.867 3.253-1.093v-4.707z"></path>
-</symbol>`);
+    while (true) {
+      try {
+        latest_updated_at_timestamp = (Math.floor(latest_updated.getTime()) / 1000).toString();
+        let latest_slug = ""
+        let ts = Math.floor(Date.now() / 1000).toString();
+        let signString = `api_key=flomo_web&app_version=2.0&latest_updated_at=${latest_updated_at_timestamp}&limit=${limit}&timestamp=${ts}&tz=8:0&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
+        let sign = new Md5().appendStr(signString).end();
+        let url = "https://flomoapp.com/api/v1/memo/updated/?limit=" + limit + "&latest_updated_at=" + latest_updated_at_timestamp + "&latest_slug=" + latest_slug + "&tz=8:0&timestamp=" +
+          ts + "&api_key=flomo_web&app_version=2.0&webp=1&sign=" + sign;
 
-        const topBarElement = this.addTopBar({
-            icon: "iconFace",
-            title: this.i18n.addTopBarIcon,
-            position: "right",
-            callback: () => {
-                if (this.isMobile) {
-                    this.addMenu();
-                } else {
-                    let rect = topBarElement.getBoundingClientRect();
-                    // 如果被隐藏，则使用更多按钮
-                    if (rect.width === 0) {
-                        rect = document.querySelector("#barMore").getBoundingClientRect();
-                    }
-                    if (rect.width === 0) {
-                        rect = document.querySelector("#barPlugins").getBoundingClientRect();
-                    }
-                    this.addMenu(rect);
-                }
-            }
-        });
-
-        const statusIconTemp = document.createElement("template");
-        statusIconTemp.innerHTML = `<div class="toolbar__item ariaLabel" aria-label="Remove plugin-sample Data">
-    <svg>
-        <use xlink:href="#iconTrashcan"></use>
-    </svg>
-</div>`;
-        statusIconTemp.content.firstElementChild.addEventListener("click", () => {
-            confirm("⚠️", this.i18n.confirmRemove.replace("${name}", this.name), () => {
-                this.removeData(STORAGE_NAME).then(() => {
-                    this.data[STORAGE_NAME] = { readonlyText: "Readonly" };
-                    showMessage(`[${this.name}]: ${this.i18n.removedData}`);
-                });
-            });
-        });
-        this.addStatusBar({
-            element: statusIconTemp.content.firstElementChild as HTMLElement,
-        });
-
-        this.customTab = this.addTab({
-            type: TAB_TYPE,
-            init() {
-                this.element.innerHTML = '<p>Hello</p>'
-            }
-        });
-
-        this.addCommand({
-            langKey: "showDialog",
-            hotkey: "⇧⌘O",
-            callback: () => {
-                this.showDialog();
-            },
-            fileTreeCallback: (file: any) => {
-                console.log(file, "fileTreeCallback");
-            },
-            editorCallback: (protyle: any) => {
-                console.log(protyle, "editorCallback");
-            },
-            dockCallback: (element: HTMLElement) => {
-                console.log(element, "dockCallback");
-            },
-        });
-        this.addCommand({
-            langKey: "getTab",
-            hotkey: "⇧⌘M",
-            globalCallback: () => {
-                console.log(this.getOpenedTab());
-            },
-        });
-
-        this.addDock({
-            config: {
-                position: "LeftBottom",
-                size: { width: 200, height: 0 },
-                icon: "iconSaving",
-                title: "Custom Dock",
-            },
-            data: {
-                text: "This is my custom dock"
-            },
-            type: DOCK_TYPE,
-            resize() {
-                console.log(DOCK_TYPE + " resize");
-            },
-            init() {
-                this.element.innerHTML = `<div class="fn__flex-1 fn__flex-column">
-    <div class="block__icons">
-        <div class="block__logo">
-            <svg><use xlink:href="#iconEmoji"></use></svg>
-            Custom Dock
-        </div>
-        <span class="fn__flex-1 fn__space"></span>
-        <span data-type="min" class="block__icon b3-tooltips b3-tooltips__sw" aria-label="Min ${adaptHotkey("⌘W")}"><svg><use xlink:href="#iconMin"></use></svg></span>
-    </div>
-    <div class="fn__flex-1 plugin-sample__custom-dock">
-        ${this.data.text}
-    </div>
-</div>`;
-            },
-            destroy() {
-                console.log("destroy dock:", DOCK_TYPE);
-            }
-        });
-
-        this.settingUtils = new SettingUtils(this, STORAGE_NAME);
-        this.settingUtils.addItem({
-            key: "Input",
-            value: "",
-            type: "textinput",
-            title: "Readonly text",
-            description: "Input description",
-        });
-        this.settingUtils.addItem({
-            key: "InputArea",
-            value: "",
-            type: "textarea",
-            title: "Readonly text",
-            description: "Input description",
-        });
-        this.settingUtils.addItem({
-            key: "Check",
-            value: true,
-            type: "checkbox",
-            title: "Checkbox text",
-            description: "Check description",
-        });
-        this.settingUtils.addItem({
-            key: "Select",
-            value: 1,
-            type: "select",
-            title: "Readonly text",
-            description: "Select description",
-            select: {
-                options: [
-                    {
-                        val: 1,
-                        text: "Option 1"
-                    },
-                    {
-                        val: 2,
-                        text: "Option 2"
-                    }
-                ]
-            }
-        });
-        this.settingUtils.addItem({
-            key: "Slider",
-            value: 50,
-            type: "slider",
-            title: "Slider text",
-            description: "Slider description",
-            slider: {
-                min: 0,
-                max: 100,
-                step: 1,
-            }
-        });
-        this.settingUtils.addItem({
-            key: "Btn",
-            value: "",
-            type: "button",
-            title: "Button",
-            description: "Button description",
-            button: {
-                label: "Button",
-                callback: () => {
-                    showMessage("Button clicked");
-                }
-            }
-        });
-
-        this.protyleSlash = [{
-            filter: ["insert emoji 😊", "插入表情 😊", "crbqwx"],
-            html: `<div class="b3-list-item__first"><span class="b3-list-item__text">${this.i18n.insertEmoji}</span><span class="b3-list-item__meta">😊</span></div>`,
-            id: "insertEmoji",
-            callback(protyle: Protyle) {
-                protyle.insert("😊");
-            }
-        }];
-
-        console.log(this.i18n.helloPlugin);
-    }
-
-    onLayoutReady() {
-        // this.loadData(STORAGE_NAME);
-        this.settingUtils.load();
-        console.log(`frontend: ${getFrontend()}; backend: ${getBackend()}`);
-    }
-
-    async onunload() {
-        console.log(this.i18n.byePlugin);
-        await this.settingUtils.save();
-        showMessage("Goodbye SiYuan Plugin");
-        console.log("onunload");
-    }
-
-    private eventBusPaste(event: any) {
-        // 如果需异步处理请调用 preventDefault， 否则会进行默认处理
-        event.preventDefault();
-        // 如果使用了 preventDefault，必须调用 resolve，否则程序会卡死
-        event.detail.resolve({
-            textPlain: event.detail.textPlain.trim(),
-        });
-    }
-
-    private eventBusLog({ detail }: any) {
-        console.log(detail);
-    }
-
-    private blockIconEvent({ detail }: any) {
-        detail.menu.addItem({
-            iconHTML: "",
-            label: this.i18n.removeSpace,
-            click: () => {
-                const doOperations: IOperation[] = [];
-                detail.blockElements.forEach((item: HTMLElement) => {
-                    const editElement = item.querySelector('[contenteditable="true"]');
-                    if (editElement) {
-                        editElement.textContent = editElement.textContent.replace(/ /g, "");
-                        doOperations.push({
-                            id: item.dataset.nodeId,
-                            data: item.outerHTML,
-                            action: "update"
-                        });
-                    }
-                });
-                detail.protyle.getInstance().transaction(doOperations);
-            }
-        });
-    }
-
-    private showDialog() {
-        const dialog = new Dialog({
-            title: `SiYuan ${Constants.SIYUAN_VERSION}`,
-            content: `<div class="b3-dialog__content">
-    <div>appId:</div>
-    <div class="fn__hr"></div>
-    <div class="plugin-sample__time">${this.app?.appId}</div>
-    <div class="fn__hr"></div>
-    <div class="fn__hr"></div>
-    <div>API demo:</div>
-    <div class="fn__hr"></div>
-    <div class="plugin-sample__time">System current time: <span id="time"></span></div>
-    <div class="fn__hr"></div>
-    <div class="fn__hr"></div>
-    <div>Protyle demo:</div>
-    <div class="fn__hr"></div>
-    <div id="protyle" style="height: 360px;"></div>
-</div>`,
-            width: this.isMobile ? "92vw" : "560px",
-            height: "540px",
-        });
-        new Protyle(this.app, dialog.element.querySelector("#protyle"), {
-            blockId: "20200812220555-lj3enxa",
-        });
-        fetchPost("/api/system/currentTime", {}, (response) => {
-            dialog.element.querySelector("#time").innerHTML = new Date(response.data).toString();
-        });
-    }
-
-    private addMenu(rect?: DOMRect) {
-        const menu = new Menu("topBarSample", () => {
-            console.log(this.i18n.byeMenu);
-        });
-        menu.addItem({
-            icon: "iconInfo",
-            label: "Dialog(open help first)",
-            accelerator: this.commands[0].customHotkey,
-            click: () => {
-                this.showDialog();
-            }
-        });
-        if (!this.isMobile) {
-            menu.addItem({
-                icon: "iconFace",
-                label: "Open Custom Tab",
-                click: () => {
-                    const tab = openTab({
-                        app: this.app,
-                        custom: {
-                            icon: "iconFace",
-                            title: "Custom Tab",
-                            data: {
-                                text: "This is my custom tab",
-                            },
-                            id: this.name + TAB_TYPE
-                        },
-                    });
-                    console.log(tab);
-                }
-            });
-            menu.addItem({
-                icon: "iconImage",
-                label: "Open Asset Tab(open help first)",
-                click: () => {
-                    const tab = openTab({
-                        app: this.app,
-                        asset: {
-                            path: "assets/paragraph-20210512165953-ag1nib4.svg"
-                        }
-                    });
-                    console.log(tab);
-                }
-            });
-            menu.addItem({
-                icon: "iconFile",
-                label: "Open Doc Tab(open help first)",
-                click: async () => {
-                    const tab = await openTab({
-                        app: this.app,
-                        doc: {
-                            id: "20200812220555-lj3enxa",
-                        }
-                    });
-                    console.log(tab);
-                }
-            });
-            menu.addItem({
-                icon: "iconSearch",
-                label: "Open Search Tab",
-                click: () => {
-                    const tab = openTab({
-                        app: this.app,
-                        search: {
-                            k: "SiYuan"
-                        }
-                    });
-                    console.log(tab);
-                }
-            });
-            menu.addItem({
-                icon: "iconRiffCard",
-                label: "Open Card Tab",
-                click: () => {
-                    const tab = openTab({
-                        app: this.app,
-                        card: {
-                            type: "all"
-                        }
-                    });
-                    console.log(tab);
-                }
-            });
-            menu.addItem({
-                icon: "iconLayout",
-                label: "Open Float Layer(open help first)",
-                click: () => {
-                    this.addFloatLayer({
-                        ids: ["20210428212840-8rqwn5o", "20201225220955-l154bn4"],
-                        defIds: ["20230415111858-vgohvf3", "20200813131152-0wk5akh"],
-                        x: window.innerWidth - 768 - 120,
-                        y: 32
-                    });
-                }
-            });
-            menu.addItem({
-                icon: "iconOpenWindow",
-                label: "Open Doc Window(open help first)",
-                click: () => {
-                    openWindow({
-                        doc: {id: "20200812220555-lj3enxa"}
-                    });
-                }
-            });
+        let response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${this.data[STORAGE_NAME]["accessToken"]}`,
+            'Content-Type': 'application/json',
+            'User-Agent': USG
+          },
+          // credentials: 'include',
+          // mode: "cors",
+        })
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
         }
-        menu.addItem({
-            icon: "iconScrollHoriz",
-            label: "Event Bus",
-            type: "submenu",
-            submenu: [{
-                icon: "iconSelect",
-                label: "On ws-main",
-                click: () => {
-                    this.eventBus.on("ws-main", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off ws-main",
-                click: () => {
-                    this.eventBus.off("ws-main", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On click-blockicon",
-                click: () => {
-                    this.eventBus.on("click-blockicon", this.blockIconEventBindThis);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off click-blockicon",
-                click: () => {
-                    this.eventBus.off("click-blockicon", this.blockIconEventBindThis);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On click-pdf",
-                click: () => {
-                    this.eventBus.on("click-pdf", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off click-pdf",
-                click: () => {
-                    this.eventBus.off("click-pdf", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On click-editorcontent",
-                click: () => {
-                    this.eventBus.on("click-editorcontent", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off click-editorcontent",
-                click: () => {
-                    this.eventBus.off("click-editorcontent", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On click-editortitleicon",
-                click: () => {
-                    this.eventBus.on("click-editortitleicon", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off click-editortitleicon",
-                click: () => {
-                    this.eventBus.off("click-editortitleicon", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-noneditableblock",
-                click: () => {
-                    this.eventBus.on("open-noneditableblock", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-noneditableblock",
-                click: () => {
-                    this.eventBus.off("open-noneditableblock", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On loaded-protyle-static",
-                click: () => {
-                    this.eventBus.on("loaded-protyle-static", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off loaded-protyle-static",
-                click: () => {
-                    this.eventBus.off("loaded-protyle-static", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On loaded-protyle-dynamic",
-                click: () => {
-                    this.eventBus.on("loaded-protyle-dynamic", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off loaded-protyle-dynamic",
-                click: () => {
-                    this.eventBus.off("loaded-protyle-dynamic", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On switch-protyle",
-                click: () => {
-                    this.eventBus.on("switch-protyle", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off switch-protyle",
-                click: () => {
-                    this.eventBus.off("switch-protyle", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On destroy-protyle",
-                click: () => {
-                    this.eventBus.on("destroy-protyle", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off destroy-protyle",
-                click: () => {
-                    this.eventBus.off("destroy-protyle", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-doctree",
-                click: () => {
-                    this.eventBus.on("open-menu-doctree", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-doctree",
-                click: () => {
-                    this.eventBus.off("open-menu-doctree", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-blockref",
-                click: () => {
-                    this.eventBus.on("open-menu-blockref", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-blockref",
-                click: () => {
-                    this.eventBus.off("open-menu-blockref", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-fileannotationref",
-                click: () => {
-                    this.eventBus.on("open-menu-fileannotationref", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-fileannotationref",
-                click: () => {
-                    this.eventBus.off("open-menu-fileannotationref", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-tag",
-                click: () => {
-                    this.eventBus.on("open-menu-tag", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-tag",
-                click: () => {
-                    this.eventBus.off("open-menu-tag", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-link",
-                click: () => {
-                    this.eventBus.on("open-menu-link", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-link",
-                click: () => {
-                    this.eventBus.off("open-menu-link", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-image",
-                click: () => {
-                    this.eventBus.on("open-menu-image", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-image",
-                click: () => {
-                    this.eventBus.off("open-menu-image", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-av",
-                click: () => {
-                    this.eventBus.on("open-menu-av", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-av",
-                click: () => {
-                    this.eventBus.off("open-menu-av", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-content",
-                click: () => {
-                    this.eventBus.on("open-menu-content", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-content",
-                click: () => {
-                    this.eventBus.off("open-menu-content", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-menu-breadcrumbmore",
-                click: () => {
-                    this.eventBus.on("open-menu-breadcrumbmore", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-menu-breadcrumbmore",
-                click: () => {
-                    this.eventBus.off("open-menu-breadcrumbmore", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On input-search",
-                click: () => {
-                    this.eventBus.on("input-search", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off input-search",
-                click: () => {
-                    this.eventBus.off("input-search", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On paste",
-                click: () => {
-                    this.eventBus.on("paste", this.eventBusPaste);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off paste",
-                click: () => {
-                    this.eventBus.off("paste", this.eventBusPaste);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-siyuan-url-plugin",
-                click: () => {
-                    this.eventBus.on("open-siyuan-url-plugin", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-siyuan-url-plugin",
-                click: () => {
-                    this.eventBus.off("open-siyuan-url-plugin", this.eventBusLog);
-                }
-            }, {
-                icon: "iconSelect",
-                label: "On open-siyuan-url-block",
-                click: () => {
-                    this.eventBus.on("open-siyuan-url-block", this.eventBusLog);
-                }
-            }, {
-                icon: "iconClose",
-                label: "Off open-siyuan-url-block",
-                click: () => {
-                    this.eventBus.off("open-siyuan-url-block", this.eventBusLog);
-                }
-            }]
-        });
-        menu.addSeparator();
-        menu.addItem({
-            icon: "iconSettings",
-            label: "Official Setting Dialog",
-            click: () => {
-                this.openSetting();
-            }
-        });
-        menu.addItem({
-            icon: "iconSparkles",
-            label: this.data[STORAGE_NAME].readonlyText || "Readonly",
-            type: "readonly",
-        });
-        if (this.isMobile) {
-            menu.fullscreen();
+
+        const data = await response.json();
+        if (this.check_authorization_and_reconnect(data)) {
+          // console.log(data);
+          let records = data["data"];
+          let noMore = records.length < limit;
+          if (records.length == 0) {
+            break
+          }
+          latest_updated = moment(records[records.length - 1]["updated_at"], 'YYYY-MM-DD HH:mm:ss').toDate()
+          //过滤已删除的（回收站的）,过滤包含同步标识的
+          allRecords = allRecords.concat(records.filter(record => {
+            // console.log(record);
+            return !record["deleted_at"] && !record["tags"].includes(syncSuccessTag);
+          }));
+
+          if (noMore) { //没有更多了
+            break
+          }
         } else {
-            menu.open({
-                x: rect.right,
-                y: rect.bottom,
-                isLeft: true,
-            });
+          throw new Error(`flomo登录校验失败`);
         }
+
+      } catch (error) {
+        await this.pushErrMsg("plugin-flomo-sync:" + "请检查错误：" + error)
+        throw new Error(`${error}`);
+      }
     }
+
+    return allRecords;
+  }
+
+
+  /**
+   * 开始同步
+   */
+  async runSync() {
+    // 防止快速点击、或手动和自动运行冲突。
+    if (this.syncing == true) {
+      // console.log("plugin-flomo-sync:" + "正在同步，请稍后")
+      return;
+    }
+
+    this.syncing = true;
+    try {
+      await this.initData();
+      let memos = await this.getLatestMemos();
+      // console.log(memos);      
+      if (memos.length == 0) {
+        // await this.pushErrMsg("plugin-flomo-sync:" + "暂无新数据")
+        this.syncing = false;
+        return;
+      }
+
+      //生成markdown 和图片
+      let { blockContent, imgs } = this.handleMarkdown(memos)
+
+      // 处理图片：下载图片到思源
+      let handleImgSuccess = await this.downloadImgs(imgs)
+
+      // 处理内容：写入思源
+      let handleContentSuccess;
+      if (handleImgSuccess) {
+        // console.log(blockContent)
+        handleContentSuccess = await this.writeSiyuan(blockContent);
+      }
+
+      // 回写标签    
+      if (handleContentSuccess && handleImgSuccess) {
+        await this.writeBackTag(memos);
+      }
+
+      // 记录同步时间,间隔1秒
+      await setTimeout(async () => {
+        // console.log("记录同步时间：");
+        let nowTimeText = moment().format('YYYY-MM-DD HH:mm:ss');
+        // console.log(nowTimeText);
+        this.data[STORAGE_NAME]["lastSyncTime"] = nowTimeText;
+        await this.saveData(STORAGE_NAME, this.data[STORAGE_NAME]);
+      }, 1000)
+    } catch (error) {
+      throw new Error(error)
+      // this.syncing = false;
+    } finally{
+      this.syncing = false;
+    }
+    
+  }
+
+
+  /**把内容写进今日日记中 */
+  async writeSiyuan(blockContent: string) {
+    //日记库id
+    let notebook = this.siyuanStorage["local-dailynoteid"]
+    //获取今日文档id
+    let todayId = await this.getTodayId(notebook);
+
+    let url = "/api/block/appendBlock"
+    let data = {
+      "data": blockContent,
+      "dataType": "markdown",
+      "parentID": todayId
+    }
+
+    let rs = await fetchSyncPost(url, data);
+    if (rs.code != 0) {
+      console.log("plugin-flomo-sync:" + rs.msg);
+    }
+    //写入后打开今日页面
+    if(this.isMobile){
+      openMobileFileById(this.app, todayId)
+    }else{
+      openTab({ app: this.app, doc: { id: todayId } });
+    }
+
+    return rs.code == 0;
+  }
+
+  /**
+   * 获取今日id
+   * @param notebook 笔记本id
+   * @returns 
+   */
+  async getTodayId(notebook) {
+    let response = await fetchSyncPost("/api/filetree/createDailyNote", { notebook: notebook })
+    return response["data"]["id"];
+  }
+
+
+  /**根据待同步的内容，生成markdown */
+  handleMarkdown(memos) {
+    let blockContent = '';
+    let imgs = [];
+
+    memos.every(memo => {
+      let content = memo.content;
+      let files = memo.files;
+      // 图片markdown
+      imgs = imgs.concat(files);
+      files.forEach(img => {
+        let imgName = img["name"];
+        if (!(imgName.endsWith(".png") || imgName.endsWith(".png") || imgName.endsWith(".gif"))) {
+          imgName = imgName + '.png'
+        }
+        let imgMd = "![" + img["name"] + "](" + FLOMO_ASSETS_DIR + "/" + img["id"] + "_" + imgName + ") ";
+        // console.log(imgMd)
+        content += imgMd
+      })
+      content = content.trim()
+      content = new TurndownService().turndown(content);
+      content = content.replaceAll('\\\[', '[').replaceAll('\\\]', ']').replaceAll('\\\_', '_').replaceAll(/(?<=#)(.+?)(?=\s)/g, "$1#");
+      content = content.split("\n").reduce((result, line) => {
+        if (line.trim() == "") {
+          line = ""
+        }
+        return result + "\t" + line + "\n"
+      }, "")
+
+      blockContent += '*  \n' + content;
+      return true;
+    })
+
+    blockContent = blockContent.replace(/\n*$/g, "").replace(/^\n*/g, "")
+    return { blockContent, imgs }
+  }
+
+
+  /**
+   * 
+   * @param imgs 下载图片到思源
+   */
+  async downloadImgs(imgs) {
+    // 处理图片逻辑
+    try {
+      imgs.every(async img => {
+        let imgName = img["name"];
+        if (!(imgName.endsWith(".png") || imgName.endsWith(".png") || imgName.endsWith(".gif"))) {
+          imgName = imgName + '.png'
+        }
+
+        let imgPath = "data/" + FLOMO_ASSETS_DIR + "/" + img["id"] + "_" + imgName;
+        let imgRespon = await fetch(img["url"]);
+        let fileBlob = await imgRespon.blob();
+        // console.log(fileBlob);
+        // console.log(imgPath);
+        await this.addFile(imgPath, fileBlob);
+        return true
+      })
+    } catch (error) {
+      await this.pushErrMsg("plugin-flomo-sync:" + error)
+      return false;
+    }
+    return true;
+  }
+
+  async addFile(f, file) {
+    const fd = new FormData();
+    fd.append('path', f);
+    fd.append('isDir', 'false');
+    fd.append('file', file);
+    return await fetch('/api/file/putFile', {
+      method: 'POST',
+      body: fd
+    });
+  }
+
+  /**
+   * 
+   * @param memos 回写标签到flomo：标识已同步
+   * @param syncSuccessTag 
+   */
+  async writeBackTag(memos: any[]) {
+    let syncSuccessTag = this.data[STORAGE_NAME]["syncSuccessTag"]
+    if (!syncSuccessTag) {
+      return
+    }
+
+    let config = this.data[STORAGE_NAME];
+    let baseUrl = "https://flomoapp.com/api/v1/memo"
+    memos.every(async memo => {
+      let nowTime = Date.now();
+      let timestamp = Math.floor(nowTime / 1000).toFixed();
+      // console.log("最后回写标签时间");
+      // console.log(new Date(nowTime));
+      let url = baseUrl + "/" + memo["slug"];
+      let sign = this.createSign(config.username, config.password, timestamp);
+      let addTag1 = "<p>#已同步 "
+      let addTag2 = "<p>#已同步 </p>"
+      let content = memo["content"].includes("<p>") ?
+        memo["content"].replace("<p>", addTag1) :
+        addTag2.concat(memo["content"])
+      let file_ids = memo["files"].map(file => file.id);
+      let data = {
+        api_key: "flomo_web",
+        app_version: "2.0",
+        content: content,
+        created: memo["created"],
+        file_ids: file_ids,
+        local_updated_at: timestamp,
+        platform: "web",
+        sign: sign,
+        timestamp: timestamp,
+        tz: "8:0",
+        webp: "1"
+      }
+
+      let response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${this.data[STORAGE_NAME]["accessToken"]}`,
+          'Content-Type': 'application/json',
+          'User-Agent': USG
+        },
+        // credentials: 'include',
+        body: JSON.stringify(data)
+        // mode: "cors",
+      })
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const resPon = await response.json();
+      // debugger;
+      if (this.check_authorization_and_reconnect(resPon)) {
+        // console.log(resPon);
+      }
+      // 处理逻辑：间隔1秒发请求，防止太快
+      setTimeout(() => { }, 1000)
+    })
+  }
+
+  /**
+   * 处理监听同步事件
+   * @param detail 
+   */
+  async eventBusHandler(detail) {
+    await this.runSync();
+  }
+
+
+  // 默认数据
+  async initData() {
+    this.data[STORAGE_NAME] = await this.loadData(STORAGE_NAME);
+    if (JSON.stringify(this.data[STORAGE_NAME]) === "{}") {
+      this.data[STORAGE_NAME] = {
+        username: "",//用户名
+        password: "",//密码
+        lastSyncTime: "",//上次同步时间
+        syncSuccessTag: "",//同步成功标签
+        isAutoSync: false,//是否绑定思源的同步
+        accessToken: "",//accessToken
+      }
+    }
+  }
+
+
+  async onload() {
+    // 加载配置数据
+    await this.initData();
+    const frontEnd = getFrontend();
+    this.isMobile = frontEnd === "mobile" || frontEnd === "browser-mobile";
+    onSyncEndEvent = this.eventBusHandler.bind(this);
+    if(this.data[STORAGE_NAME].isAutoSync){
+      this.eventBus.on("sync-end", onSyncEndEvent);
+    }
+    let conResponse = await this.getLocalStorage();
+    this.siyuanStorage = conResponse["data"];
+    // console.log(this.siyuanStorage);
+    const topBarElement = this.addTopBar({
+      icon: '<svg t="1701609878223" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4530" width="200" height="200"><path d="M0 0h1024v1024H0z" fill="#FAFAFA" p-id="4531"></path><path d="M709.461 507.212H332.07V399.559h447.497l-65.422 105.264c0 2.389-2.342 2.389-4.684 2.389z m98.143-167.462H450.067l65.441-105.273c2.342 0 4.675-2.39 7.016-2.39h355.177l-65.422 105.264c0 2.399-2.342 2.399-4.684 2.399z" fill="#30CF79" p-id="4532"></path><path d="M337.91 791.912c-105.159 0-191.62-88.519-191.62-196.181s86.461-196.172 191.62-196.172c105.15 0 191.621 88.51 191.621 196.172s-86.47 196.172-191.62 196.172z m0-282.31c-46.743 0-86.47 38.276-86.47 88.518 0 47.853 37.394 88.529 86.47 88.529 49.067 0 86.462-38.286 86.462-88.529-2.342-50.242-39.727-88.519-86.471-88.519z" fill="#30CF79" p-id="4533"></path></svg>',
+      title: "flomo同步",
+      position: "right",
+      callback: await this.runSync.bind(this),
+    });
+
+    const usernameElement = document.createElement("textarea");
+    const passwordElement = document.createElement("textarea");
+    const isAutoSyncElement = document.createElement('input');
+    const lastSyncTimeElement = document.createElement('textarea');
+    const syncSuccessTagElement = document.createElement('textarea');
+    const accessTokenElement = document.createElement('textarea');
+
+    this.setting = new Setting({
+      width: '700px',
+      height: '500px',
+      confirmCallback: async () => {
+        if (isAutoSyncElement.checked != this.data[STORAGE_NAME].isAutoSync) {
+          if (isAutoSyncElement.checked) {
+            this.eventBus.on("sync-end", this.eventBusHandler);
+          } else {
+            this.eventBus.off("sync-end", this.eventBusHandler);
+          }
+        }
+        await this.saveData(STORAGE_NAME, {
+          username: usernameElement.value,
+          password: passwordElement.value,
+          isAutoSync: isAutoSyncElement.checked,
+          lastSyncTime: lastSyncTimeElement.value,
+          syncSuccessTag: syncSuccessTagElement.value,
+          accessToken: accessTokenElement.value
+        });
+      }
+    });
+
+    this.setting.addItem({
+      title: "账号",
+      description: "请输入flomo的手机号或邮箱",
+      createActionElement: () => {
+        usernameElement.className = "b3-text-field fn__block";
+        usernameElement.placeholder = "手机或邮箱";
+        usernameElement.value = this.data[STORAGE_NAME].username;
+        return usernameElement;
+      },
+    });
+
+
+    this.setting.addItem({
+      title: "密码",
+      createActionElement: () => {
+        passwordElement.className = "b3-text-field fn__block";
+        passwordElement.placeholder = "请输入密码";
+        passwordElement.value = this.data[STORAGE_NAME].password;
+        return passwordElement;
+      },
+    });
+
+    this.setting.addItem({
+      title: "是否自动同步",
+      description: "思源同步完成后自动同步flomo",
+      createActionElement: () => {
+        isAutoSyncElement.type = 'checkbox';
+        isAutoSyncElement.className = "b3-switch fn__flex-center";
+        isAutoSyncElement.checked = this.data[STORAGE_NAME].isAutoSync;
+        return isAutoSyncElement;
+      },
+    });
+
+    let today = moment().format("YYYY-MM-DD 00:00:00");
+    this.setting.addItem({
+      title: "上次同步时间",
+      description: `为空则默认为今天0点，${today}，并会自动记录本次同步时间`,
+      createActionElement: () => {
+        lastSyncTimeElement.className = "b3-text-field fn__block";
+        lastSyncTimeElement.placeholder = "如有特殊要求可指定上次同步时间";
+        lastSyncTimeElement.value = this.data[STORAGE_NAME].lastSyncTime;
+        return lastSyncTimeElement;
+      },
+    });
+
+
+    this.setting.addItem({
+      title: "回写同步成功标签",
+      description: "将同步的记录，加一个标签标识，为空则不加",
+      createActionElement: () => {
+        syncSuccessTagElement.className = "b3-text-field fn__block";
+        syncSuccessTagElement.placeholder = "请输入回写同步成功标签，如：“已同步” ";
+        syncSuccessTagElement.value = this.data[STORAGE_NAME].syncSuccessTag;
+        return syncSuccessTagElement;
+      },
+    });
+
+    this.setting.addItem({
+      title: "accessToken",
+      description: "一般不填，也不修改，除非登录不起作用时可手动更改",
+      createActionElement: () => {
+        accessTokenElement.className = "b3-text-field fn__block";
+        // accessTokenElement.readOnly = true;
+        accessTokenElement.value = this.data[STORAGE_NAME].accessToken;
+        return accessTokenElement;
+      },
+    });
+
+  }
+
+  async onunload() {
+    this.eventBus.off("sync-end", this.eventBusHandler);
+    this.syncing = false;
+  }
+
+  async onLayoutReady() {
+    // console.log("onLayoutReady");
+    if (!this.data[STORAGE_NAME].accessToken) {
+      await this.connect();
+    }
+  }
+
+  // 连接flomo
+  async connect() {
+    let config = this.data[STORAGE_NAME];
+    if (!config.username || !config.password) {
+      await this.pushErrMsg("plugin-flomo-sync:" + "用户名或密码为空，重新配置后再试")
+    }
+    let timestamp = Math.floor(Date.now() / 1000).toFixed();
+    let sign = this.createSign(config.username, config.password, timestamp);
+    let url = "https://flomoapp.com/api/v1/user/login_by_email"
+    let data = {
+      "api_key": "flomo_web",
+      "app_version": "2.0",
+      "email": config.username,
+      "password": config.password,
+      "sign": sign,
+      "timestamp": timestamp,
+      "webp": "1",
+    }
+
+
+
+    try {
+      let response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.data[STORAGE_NAME]["accessToken"]}`,
+          'Content-Type': 'application/json',
+          'User-Agent': USG
+        },
+        // credentials: 'include',
+        body: JSON.stringify(data)
+        // mode: "cors",
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const resData = await response.json();
+      // console.log(resData);
+      if (resData.code == -10) {
+        throw new Error(`同步失败，请重试：${resData.message}`);
+      } else if (resData.code == -1) {
+        throw new Error(`请检查用户名和密码，或手动更新accessToken后再试`);
+      } else if (resData.code !== 0) {
+        throw new Error(`Server error! msg: ${resData.message}`);
+      } else {
+        // 登录成功 ，刷新AccessToken
+        this.data[STORAGE_NAME]["accessToken"] = resData.data["access_token"];
+        await this.saveData(STORAGE_NAME, this.data[STORAGE_NAME]);
+      }
+      return true;
+    } catch (error) {
+      await this.pushErrMsg("plugin-flomo-sync:" + error);
+      return false;
+    }
+  }
+
+
+  createSign(username, password, timestamp) {
+    let words = `api_key=flomo_web&app_version=2.0&email=${username}&password=${password}&timestamp=${timestamp}&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
+    let sign = new Md5().appendStr(words).end();
+    // console.log(sign);
+    return sign;
+  }
+
+
+  async check_authorization_and_reconnect(resData) {
+    // 检测到accessToken失效就提示，就重新登录
+    if (resData.code == -10) {
+      // 重新登录
+      await this.connect();
+    } else if (resData.code !== 0) {
+      await this.pushErrMsg(`Server error! msg: ${resData.message}`);
+      // throw new Error(`Server error! msg: ${resData.message}`);
+    }
+    return resData.code == 0;
+  }
 }

@@ -1,36 +1,36 @@
 {
-  "name": "plugin-sample-vite",
-  "author": "frostime",
-  "url": "https://github.com/frostime/plugin-sample-vite",
-  "version": "0.2.8",
-  "minAppVersion": "2.10.14",
+  "name": "plugin-flomo-sync",
+  "author": "winter60",
+  "url": "https://github.com/winter60/plugin-flomo-sync",
+  "version": "0.0.1",
+  "minAppVersion": "2.11.1",
   "backends": [
-    "windows",
-    "linux",
-    "darwin"
+    "all"
   ],
   "frontends": [
-    "desktop",
-    "desktop-window"
+    "all"
   ],
   "displayName": {
-    "en_US": "Plugin sample with vite",
-    "zh_CN": "插件样例 vite 版"
+    "default": "flomo sync",
+    "zh_CN": "浮墨同步"
   },
   "description": {
-    "en_US": "SiYuan plugin sample with vite",
-    "zh_CN": "使用 vite 开发的思源插件样例"
+    "default": "flomo sync",
+    "zh_CN": "浮墨同步"
   },
   "readme": {
-    "en_US": "README.md",
-    "zh_CN": "README_zh_CN.md"
+    "default": "README.md",
+    "zh_CN": "README.md"
   },
   "funding": {
+    "openCollective": "",
+    "patreon": "",
+    "github": "",
     "custom": [
-      "https://afdian.net/a/frostime"
+      "https://afdian.net/a/firework"
     ]
   },
   "keywords": [
-    "plugin", "sample", "插件样例"
+    "浮墨", "flomo","同步","sync"
   ]
 }
