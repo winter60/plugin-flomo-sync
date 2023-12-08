@@ -121,7 +121,8 @@ export default class FlomoSync extends Plugin {
       let memos = await this.getLatestMemos();
       // console.log(memos);      
       if (memos.length == 0) {
-        // await this.pushErrMsg("plugin-flomo-sync:" + "暂无新数据")
+        let nowTimeText = moment().format('YYYY-MM-DD HH:mm:ss');
+        console.warn("plugin-flomo-sync:" + "暂无新数据-" + nowTimeText)
         this.syncing = false;
         return;
       }

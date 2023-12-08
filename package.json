@@ -1,8 +1,8 @@
 {
-  "name": "plugin-sample-vite-svelte",
-  "version": "0.2.6",
+  "name": "plugin-flomo-sync",
+  "version": "0.0.1",
   "type": "module",
-  "description": "This is a sample plugin based on vite and svelte for Siyuan (https://b3log.org/siyuan)",
+  "description": "flomo 同步",
   "repository": "",
   "homepage": "",
   "author": "",
