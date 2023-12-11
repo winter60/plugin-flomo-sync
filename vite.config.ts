@@ -8,7 +8,7 @@ import fg from 'fast-glob';
 
 const args = minimist(process.argv.slice(2))
 const isWatch = args.watch || args.w || false
-const devDistDir = "./dev"
+const devDistDir = "d:\\all_workspace\\SiYuan\\data\\plugins\\plugin-flomo-sync"
 const distDir = isWatch ? devDistDir : "./dist"
 
 console.log("isWatch=>", isWatch)
