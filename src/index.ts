@@ -484,7 +484,9 @@ export default class FlomoSync extends Plugin {
           }
         }
       }else if(k === "lastSyncTime"){
-        d[k] = defaultConfig[k];
+        if(!d[k]){
+          d[k] = defaultConfig[k];
+        }
       }
     }
   }
