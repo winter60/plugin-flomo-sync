@@ -1,6 +1,7 @@
 import {
   Plugin,
   fetchPost,
+  confirm,
   fetchSyncPost,
   openTab,
   Setting,
@@ -34,6 +35,23 @@ export default class FlomoSync extends Plugin {
     return await fetchSyncPost("/api/storage/getLocalStorage");
   }
 
+/**
+ * 
+ * @param callFun 将回调变为异步函数
+ * @param success 
+ * @param fail 
+ * @param args 
+ * @returns 
+ */
+  async waitFunction(callFun, success, fail, ...args) {
+    return new Promise((resolve) => {
+      callFun(...args, (...result) => {
+        resolve(success(...result));
+      }, (...result) => {
+        resolve(fail(...result));
+      });
+    });
+  }
   /**
    * 获取所有记录：上次同步时间作为起点
    */
@@ -42,22 +60,49 @@ export default class FlomoSync extends Plugin {
     let syncSuccessTag = this.data[STORAGE_NAME]["syncSuccessTag"]
     let lastSyncTime = this.data[STORAGE_NAME]["lastSyncTime"]
 
-    const limit = 200;
+    let syncTagMode = this.data[STORAGE_NAME].syncTagMode;
+    let syncIncludeTags = this.data[STORAGE_NAME].syncIncludeTags;//包含标签字符串
+    let syncExcludeTags = this.data[STORAGE_NAME].syncExcludeTags;//排除标签字符串
+
+    let syncIncludeTagsArr = syncIncludeTags === "" ? [] : syncIncludeTags.split(/\s+/)
+    let syncExcludeTagsArr = syncExcludeTags === "" ? [] : syncExcludeTags.split(/\s+/)
+
+
+    const LIMIT = "200";
     let today = new Date();
     //只能是指定时间或今天00:00:00
     let latest_updated = moment(lastSyncTime, 'YYYY-MM-DD HH:mm:ss').toDate()
       || moment(today, 'YYYY-MM-DD 00:00:00').toDate()
     let latest_updated_at_timestamp;
-
+    let latest_slug = "";
+    
     while (true) {
       try {
         latest_updated_at_timestamp = (Math.floor(latest_updated.getTime()) / 1000).toString();
-        let latest_slug = ""
         let ts = Math.floor(Date.now() / 1000).toString();
-        let signString = `api_key=flomo_web&app_version=2.0&latest_updated_at=${latest_updated_at_timestamp}&limit=${limit}&timestamp=${ts}&tz=8:0&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
-        let sign = new Md5().appendStr(signString).end();
-        let url = "https://flomoapp.com/api/v1/memo/updated/?limit=" + limit + "&latest_updated_at=" + latest_updated_at_timestamp + "&latest_slug=" + latest_slug + "&tz=8:0&timestamp=" +
-          ts + "&api_key=flomo_web&app_version=2.0&webp=1&sign=" + sign;
+        // let signString;
+        // if (!latest_slug) {
+        //   signString = `api_key=flomo_web&app_version=2.0&latest_updated_at=${latest_updated_at_timestamp}&limit=${LIMIT}&timestamp=${ts}&tz=8:0&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
+        // } else {
+        //   signString = `api_key=flomo_web&app_version=2.0&latest_slug=${latest_slug}&latest_updated_at=${latest_updated_at_timestamp}&limit=${LIMIT}&timestamp=${ts}&tz=8:0&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
+        // }
+        // let sign = new Md5().appendStr(signString).end();        
+        // let url = "https://flomoapp.com/api/v1/memo/updated/?limit=" + LIMIT + "&latest_updated_at=" + latest_updated_at_timestamp + "&latest_slug=" + latest_slug + "&tz=8:0&timestamp=" +
+        //   ts + "&api_key=flomo_web&app_version=2.0&webp=1&sign=" + sign;
+
+        let param = {
+          api_key: "flomo_web",
+          app_version: "2.0",
+          latest_slug: latest_slug,
+          latest_updated_at: latest_updated_at_timestamp,
+          limit: LIMIT,
+          timestamp: ts,
+          tz: "8:0",
+          webp: "1"
+        }
+        param["sign"] = this.createSign2(param);
+        let url = new URL("https://flomoapp.com/api/v1/memo/updated");
+        url.search = new URLSearchParams(param).toString();
 
         let response = await fetch(url, {
           method: 'GET',
@@ -66,27 +111,50 @@ export default class FlomoSync extends Plugin {
             'Content-Type': 'application/json',
             'User-Agent': USG
           },
-          // credentials: 'include',
-          // mode: "cors",
         })
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
 
         const data = await response.json();
+        // if (data.code !== 0) {
+        //   throw new Error(`错误: ${data.message}`);
+        // }
+        
         if (this.check_authorization_and_reconnect(data)) {
           // console.log(data);
           let records = data["data"];
-          let noMore = records.length < limit;
+          let noMore = records.length < LIMIT;
           if (records.length == 0) {
             break
           }
           latest_updated = moment(records[records.length - 1]["updated_at"], 'YYYY-MM-DD HH:mm:ss').toDate()
+          latest_slug = records[records.length - 1]["slug"]
+
           //过滤已删除的（回收站的）,过滤包含同步标识的
           allRecords = allRecords.concat(records.filter(record => {
-            // console.log(record);
             return !record["deleted_at"] && !record["tags"].includes(syncSuccessTag);
           }));
+
+          // 过滤标签
+          if (syncTagMode === "0") {
+            // 排除同步标签
+            allRecords = allRecords.filter(record => {
+              let memoTags = record["tags"];
+              if (memoTags.length == 0) {
+                return true
+              }
+
+              return syncExcludeTagsArr.every(myTag => memoTags.includes(myTag) == false)
+            });
+
+          } else {// if(syncTagMode === "1"){
+            // 包含同步标签
+            allRecords = allRecords.filter(record => {
+              let memoTags = record["tags"];
+              return syncIncludeTagsArr.some(myTag => memoTags.includes(myTag))
+            });
+          }
 
           if (noMore) { //没有更多了
             break
@@ -128,7 +196,7 @@ export default class FlomoSync extends Plugin {
       }
 
       //生成markdown 和图片
-      let { blockContent, imgs } = this.handleMarkdown(memos)
+      let { contentArr, imgs } = this.handleMarkdown(memos)
 
       // 处理图片：下载图片到思源
       let handleImgSuccess = await this.downloadImgs(imgs)
@@ -136,10 +204,11 @@ export default class FlomoSync extends Plugin {
       // 处理内容：写入思源
       let handleContentSuccess;
       if (handleImgSuccess) {
-        // console.log(blockContent)
-        handleContentSuccess = await this.writeSiyuan(blockContent);
+        // console.log(contentArr)
+        handleContentSuccess = await this.writeSiyuan(contentArr);
       }
 
+      // todo 导致回写标签重复
       // 回写标签    
       if (handleContentSuccess && handleImgSuccess) {
         await this.writeBackTag(memos);
@@ -156,39 +225,61 @@ export default class FlomoSync extends Plugin {
     } catch (error) {
       throw new Error(error)
       // this.syncing = false;
-    } finally{
+    } finally {
       this.syncing = false;
     }
-    
+
   }
 
 
   /**把内容写进今日日记中 */
-  async writeSiyuan(blockContent: string) {
-    //日记库id
-    let notebook = this.siyuanStorage["local-dailynoteid"]
-    //获取今日文档id
-    let todayId = await this.getTodayId(notebook);
+  async writeSiyuan(contentArr: string[]) {
+    try {
+      let targetPage = await this.getTargetPage();
+      for (let blockContent of contentArr) {
+        let url = "/api/block/appendBlock"
+        let data = {
+          "data": blockContent,
+          "dataType": "markdown",
+          "parentID": targetPage
+        }
 
-    let url = "/api/block/appendBlock"
-    let data = {
-      "data": blockContent,
-      "dataType": "markdown",
-      "parentID": todayId
+        let rs = await fetchSyncPost(url, data);
+        if (rs.code != 0) {
+          console.log("plugin-flomo-sync:" + rs.msg);
+        }
+      }
+      //写入后打开今日页面
+      if (this.isMobile) {
+        openMobileFileById(this.app, targetPage)
+      } else {
+        openTab({ app: this.app, doc: { id: targetPage } });
+      }
+    } catch (error) {
+      console.error("plugin-flomo-sync:" + error);
+      return false
     }
+    return true
+  }
 
-    let rs = await fetchSyncPost(url, data);
-    if (rs.code != 0) {
-      console.log("plugin-flomo-sync:" + rs.msg);
-    }
-    //写入后打开今日页面
-    if(this.isMobile){
-      openMobileFileById(this.app, todayId)
-    }else{
-      openTab({ app: this.app, doc: { id: todayId } });
-    }
+  /**
+   * 获取指定页面
+   */
+  async getTargetPage() {
+    let locationMode = this.data[STORAGE_NAME].locationMode;
+    let targetPage = this.data[STORAGE_NAME].pageId;
+    let notebook = this.data[STORAGE_NAME].dailnoteNotebook;//指定的笔记本
+    if (locationMode === "0") {
+      if (!notebook) {
+        //指定的笔记本为空就使用默认的笔记本
+        notebook = this.siyuanStorage["local-dailynoteid"];
+      }
 
-    return rs.code == 0;
+      // 获取今日文档id
+      let todayId = await this.getTodayId(notebook);
+      targetPage = todayId
+    }
+    return targetPage
   }
 
   /**
@@ -204,10 +295,11 @@ export default class FlomoSync extends Plugin {
 
   /**根据待同步的内容，生成markdown */
   handleMarkdown(memos) {
+    const LIST_MAX_NUM = 50;//多少条作为一个列表，列表太长容易卡顿。
     let blockContent = '';
     let imgs = [];
-
-    memos.every(memo => {
+    let contentArr = []
+    memos.every((memo, idx) => {
       let content = memo.content;
       let files = memo.files;
       // 图片markdown
@@ -232,11 +324,18 @@ export default class FlomoSync extends Plugin {
       }, "")
 
       blockContent += '*  \n' + content;
+      if (((idx + 1) % LIST_MAX_NUM == 0) || (idx + 1 == memos.length)) {
+        // 开始分隔        
+        blockContent = blockContent.replace(/\n*$/g, "").replace(/^\n*/g, "")
+        contentArr.push(blockContent)
+        blockContent = ""
+      }
+
       return true;
     })
 
-    blockContent = blockContent.replace(/\n*$/g, "").replace(/^\n*/g, "")
-    return { blockContent, imgs }
+    // blockContent = blockContent.replace(/\n*$/g, "").replace(/^\n*/g, "")
+    return { contentArr, imgs }
   }
 
 
@@ -290,7 +389,7 @@ export default class FlomoSync extends Plugin {
       return
     }
 
-    let config = this.data[STORAGE_NAME];
+    // let config = this.data[STORAGE_NAME];
     let baseUrl = "https://flomoapp.com/api/v1/memo"
     memos.every(async memo => {
       let nowTime = Date.now();
@@ -298,9 +397,9 @@ export default class FlomoSync extends Plugin {
       // console.log("最后回写标签时间");
       // console.log(new Date(nowTime));
       let url = baseUrl + "/" + memo["slug"];
-      let sign = this.createSign(config.username, config.password, timestamp);
-      let addTag1 = "<p>#已同步 "
-      let addTag2 = "<p>#已同步 </p>"
+      // let sign = this.createSign(config.username, config.password, timestamp);
+      let addTag1 = `<p>#${syncSuccessTag} `
+      let addTag2 = `<p>#${syncSuccessTag} </p>`
       let content = memo["content"].includes("<p>") ?
         memo["content"].replace("<p>", addTag1) :
         addTag2.concat(memo["content"])
@@ -313,12 +412,12 @@ export default class FlomoSync extends Plugin {
         file_ids: file_ids,
         local_updated_at: timestamp,
         platform: "web",
-        sign: sign,
+        // sign: sign,
         timestamp: timestamp,
         tz: "8:0",
         webp: "1"
       }
-
+      data["sign"] = this.createSign2(data);
       let response = await fetch(url, {
         method: 'PUT',
         headers: {
@@ -326,9 +425,7 @@ export default class FlomoSync extends Plugin {
           'Content-Type': 'application/json',
           'User-Agent': USG
         },
-        // credentials: 'include',
         body: JSON.stringify(data)
-        // mode: "cors",
       })
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -353,33 +450,58 @@ export default class FlomoSync extends Plugin {
   }
 
 
-  // 默认数据
+  //默认数据
   async initData() {
-    this.data[STORAGE_NAME] = await this.loadData(STORAGE_NAME);
-    if (JSON.stringify(this.data[STORAGE_NAME]) === "{}") {
-      this.data[STORAGE_NAME] = {
-        username: "",//用户名
-        password: "",//密码
-        lastSyncTime: "",//上次同步时间
-        syncSuccessTag: "",//同步成功标签
-        isAutoSync: false,//是否绑定思源的同步
-        accessToken: "",//accessToken
+    this.data[STORAGE_NAME] = await this.loadData(STORAGE_NAME) || {};
+
+    let defaultConfig = {
+      username: "",//用户名
+      password: "",//密码
+      lastSyncTime: moment().format("YYYY-MM-DD 00:00:00"),//上次同步时间
+      syncSuccessTag: "",//同步成功标签
+      isAutoSync: false,//是否绑定思源的同步
+      accessToken: "",//accessToken
+
+      locationMode: "0",
+      dailnoteNotebook: "",
+      pageId: "",
+
+      syncTagMode: "0",
+      syncIncludeTags: "",
+      syncExcludeTags: "",
+
+    }
+
+    let d = this.data[STORAGE_NAME];
+    for (let k in defaultConfig) {
+      if (d[k] === undefined || d[k] === "undefined") {
+        d[k] = defaultConfig[k];
+
+        if (k === "dailnoteNotebook") {
+          if (d["locationMode"] == "0") {
+            //取默认数据库
+            d[k] = this.siyuanStorage["local-dailynoteid"];
+          }
+        }
+      }else if(k === "lastSyncTime"){
+        d[k] = defaultConfig[k];
       }
     }
   }
 
 
   async onload() {
+    let conResponse = await this.getLocalStorage();
+    this.siyuanStorage = conResponse["data"];
     // 加载配置数据
     await this.initData();
     const frontEnd = getFrontend();
     this.isMobile = frontEnd === "mobile" || frontEnd === "browser-mobile";
     onSyncEndEvent = this.eventBusHandler.bind(this);
-    if(this.data[STORAGE_NAME].isAutoSync){
+    if (this.data[STORAGE_NAME].isAutoSync) {
       this.eventBus.on("sync-end", onSyncEndEvent);
     }
-    let conResponse = await this.getLocalStorage();
-    this.siyuanStorage = conResponse["data"];
+
     // console.log(this.siyuanStorage);
     const topBarElement = this.addTopBar({
       icon: '<svg t="1701609878223" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4530" width="200" height="200"><path d="M0 0h1024v1024H0z" fill="#FAFAFA" p-id="4531"></path><path d="M709.461 507.212H332.07V399.559h447.497l-65.422 105.264c0 2.389-2.342 2.389-4.684 2.389z m98.143-167.462H450.067l65.441-105.273c2.342 0 4.675-2.39 7.016-2.39h355.177l-65.422 105.264c0 2.399-2.342 2.399-4.684 2.399z" fill="#30CF79" p-id="4532"></path><path d="M337.91 791.912c-105.159 0-191.62-88.519-191.62-196.181s86.461-196.172 191.62-196.172c105.15 0 191.621 88.51 191.621 196.172s-86.47 196.172-191.62 196.172z m0-282.31c-46.743 0-86.47 38.276-86.47 88.518 0 47.853 37.394 88.529 86.47 88.529 49.067 0 86.462-38.286 86.462-88.529-2.342-50.242-39.727-88.519-86.471-88.519z" fill="#30CF79" p-id="4533"></path></svg>',
@@ -388,17 +510,26 @@ export default class FlomoSync extends Plugin {
       callback: await this.runSync.bind(this),
     });
 
-    const usernameElement = document.createElement("textarea");
-    const passwordElement = document.createElement("textarea");
-    const isAutoSyncElement = document.createElement('input');
-    const lastSyncTimeElement = document.createElement('textarea');
-    const syncSuccessTagElement = document.createElement('textarea');
-    const accessTokenElement = document.createElement('textarea');
+    let usernameElement = document.createElement("textarea");
+    let passwordElement = document.createElement("textarea");
+    let isAutoSyncElement = document.createElement('input');
+    let lastSyncTimeElement = document.createElement('textarea');
+    let syncSuccessTagElement = document.createElement('textarea');
+    let accessTokenElement = document.createElement('textarea');
+
+    let locationModeElement;//写入思源位置方案
+    let dailnoteNotebookElement = document.createElement('textarea');
+    let pageIdElement = document.createElement('textarea');
+
+    let syncTagModeElement;
+    let syncIncludeTagsElement = document.createElement('textarea');
+    let syncExcludeTagsElement = document.createElement('textarea');
 
     this.setting = new Setting({
       width: '700px',
       height: '500px',
       confirmCallback: async () => {
+        let d = this.data[STORAGE_NAME];
         if (isAutoSyncElement.checked != this.data[STORAGE_NAME].isAutoSync) {
           if (isAutoSyncElement.checked) {
             this.eventBus.on("sync-end", this.eventBusHandler);
@@ -406,19 +537,50 @@ export default class FlomoSync extends Plugin {
             this.eventBus.off("sync-end", this.eventBusHandler);
           }
         }
-        await this.saveData(STORAGE_NAME, {
-          username: usernameElement.value,
-          password: passwordElement.value,
-          isAutoSync: isAutoSyncElement.checked,
-          lastSyncTime: lastSyncTimeElement.value,
-          syncSuccessTag: syncSuccessTagElement.value,
-          accessToken: accessTokenElement.value
-        });
+
+        if (!pageIdElement.value && locationModeElement.value == "1") {
+          this.pushErrMsg("同步到指定文档需要配置文档id")
+          // return false;
+        }
+
+        if (syncSuccessTagElement.value.length != 0) {
+          if (syncSuccessTagElement.value.includes(" ")) {
+            this.pushErrMsg("同步成功标签不能包含空格，也不能有多个，请重新配置")
+          }
+
+          if (d.syncSuccessTag === "") {
+            //加强提醒
+            let isAgree = await this.waitFunction(
+              confirm, () => true, () => false,
+              `温馨提示`,
+              `将同步成功的标签${syncSuccessTagElement.value}回写进flomo后该插件不能撤销，是否同意写入？`
+            );
+            if (!isAgree) {
+              syncSuccessTagElement.value = ""
+            }
+          }
+        }
+
+
+        d.username = usernameElement.value;
+        d.password = passwordElement.value;
+        d.isAutoSync = isAutoSyncElement.checked;
+        d.lastSyncTime = lastSyncTimeElement.value;
+        d.syncSuccessTag = syncSuccessTagElement.value;
+        d.accessToken = accessTokenElement.value;
+
+        d.locationMode = locationModeElement.value;
+        d.dailnoteNotebook = dailnoteNotebookElement.value;
+        d.pageId = pageIdElement.value;
+        d.syncTagMode = syncTagModeElement.value;
+        d.syncIncludeTags = syncIncludeTagsElement.value;
+        d.syncExcludeTags = syncExcludeTagsElement.value;
+        await this.saveData(STORAGE_NAME, d);
       }
     });
 
     this.setting.addItem({
-      title: "账号",
+      title: "账号<code class='fn__code'>必填项</code>",
       description: "请输入flomo的手机号或邮箱",
       createActionElement: () => {
         usernameElement.className = "b3-text-field fn__block";
@@ -430,7 +592,7 @@ export default class FlomoSync extends Plugin {
 
 
     this.setting.addItem({
-      title: "密码",
+      title: "密码<code class='fn__code'>必填项</code>",
       createActionElement: () => {
         passwordElement.className = "b3-text-field fn__block";
         passwordElement.placeholder = "请输入密码";
@@ -462,10 +624,112 @@ export default class FlomoSync extends Plugin {
       },
     });
 
+    this.setting.addItem({
+      title: "写入思源位置方案",
+      description: "放在指定库的daily notes中，或指定文档中",
+      createActionElement: () => {
+        locationModeElement = document.createElement('select')
+        locationModeElement.className = "b3-select fn__flex-center fn__size200";
+        let options = [
+          {
+            val: "0",
+            text: "指定笔记本daily note中"
+          },
+          {
+            val: "1",
+            text: "指定文档中"
+          }
+        ]
+        for (let option of options) {
+          let optionElement = document.createElement('option');
+          optionElement.value = option.val;
+          optionElement.text = option.text;
+          locationModeElement.appendChild(optionElement);
+        }
+        locationModeElement.value = this.data[STORAGE_NAME].locationMode;
+        return locationModeElement;
+      }
+    });
 
     this.setting.addItem({
+      title: "dailynote笔记本id",
+      description: "获取方式：右击文档树的笔记本，打开文件位置，其路径id就是",
+      createActionElement: () => {
+
+        dailnoteNotebookElement.className = "b3-text-field fn__block";
+        dailnoteNotebookElement.placeholder = "请输入dailynote笔记本id，如：“20230307225200-d5v9wrx” ";
+        dailnoteNotebookElement.value = this.data[STORAGE_NAME].dailnoteNotebook;
+        return dailnoteNotebookElement;
+      },
+    });
+
+    this.setting.addItem({
+      title: "指定文档id",
+      description: "填写指定定文档id",
+      createActionElement: () => {
+        pageIdElement.className = "b3-text-field fn__block";
+        pageIdElement.placeholder = "请输入";
+        pageIdElement.value = this.data[STORAGE_NAME].pageId;
+        return pageIdElement;
+      },
+    });
+
+
+    // 同步标签方案
+    this.setting.addItem({
+      title: "同步标签方案",
+      description: "两种方案，排除标签（默认），包含标签",
+      createActionElement: () => {
+        syncTagModeElement = document.createElement('select');
+        syncTagModeElement.className = "b3-select fn__flex-center fn__size200";
+        let options = [
+          {
+            val: "0",
+            text: "排除标签"
+          },
+          {
+            val: "1",
+            text: "包含标签"
+          }
+        ]
+        for (let option of options) {
+          let optionElement = document.createElement('option');
+          optionElement.value = option.val;
+          optionElement.text = option.text;
+          syncTagModeElement.appendChild(optionElement);
+        }
+        syncTagModeElement.value = this.data[STORAGE_NAME].syncTagMode;
+        return syncTagModeElement;
+      }
+    });
+
+
+    this.setting.addItem({
+      title: "同步包含标签",
+      description: "包含以下标签才会同步进来，<code class='fn__code'>和排除标签互斥，选一即可</code>。中间用空格隔开。注意：不要加#",
+      createActionElement: () => {
+        syncIncludeTagsElement.className = "b3-text-field fn__block";
+        syncIncludeTagsElement.placeholder = "请输入同步包含标签，如：“工作 收集箱” ";
+        syncIncludeTagsElement.value = this.data[STORAGE_NAME].syncIncludeTags;
+        return syncIncludeTagsElement;
+      },
+    });
+
+    this.setting.addItem({
+      title: "同步排除标签",
+      description: "除以下标签外才会同步进来，<code class='fn__code'>和包含标签互斥，选一即可</code>。中间用空格隔开。注意：不要加#",
+      createActionElement: () => {
+        syncExcludeTagsElement.className = "b3-text-field fn__block";
+        syncExcludeTagsElement.placeholder = "同步排除标签，如：“草稿 已同步” ";
+        syncExcludeTagsElement.value = this.data[STORAGE_NAME].syncExcludeTags;
+        return syncExcludeTagsElement;
+      },
+    });
+
+    // 加强提醒，切换时，保存时再提醒一次。
+    this.setting.addItem({
       title: "回写同步成功标签",
-      description: "将同步的记录，加一个标签标识，为空则不加",
+      description: `将同步的记录，加一个同步后标签标识写入flomo，为空则不加。温馨提示：1. 不要加# 2.<code class="fn__code">回写flomo成功后不能批量去掉标签，根据需要谨慎填写</code>`,
       createActionElement: () => {
         syncSuccessTagElement.className = "b3-text-field fn__block";
         syncSuccessTagElement.placeholder = "请输入回写同步成功标签，如：“已同步” ";
@@ -506,20 +770,18 @@ export default class FlomoSync extends Plugin {
       await this.pushErrMsg("plugin-flomo-sync:" + "用户名或密码为空，重新配置后再试")
     }
     let timestamp = Math.floor(Date.now() / 1000).toFixed();
-    let sign = this.createSign(config.username, config.password, timestamp);
+    // let sign = this.createSign(config.username, config.password, timestamp);
     let url = "https://flomoapp.com/api/v1/user/login_by_email"
     let data = {
       "api_key": "flomo_web",
       "app_version": "2.0",
       "email": config.username,
       "password": config.password,
-      "sign": sign,
+      // "sign": sign,
       "timestamp": timestamp,
       "webp": "1",
     }
-
-
-
+    data["sign"] = this.createSign2(data);
     try {
       let response = await fetch(url, {
         method: 'POST',
@@ -528,9 +790,7 @@ export default class FlomoSync extends Plugin {
           'Content-Type': 'application/json',
           'User-Agent': USG
         },
-        // credentials: 'include',
         body: JSON.stringify(data)
-        // mode: "cors",
       })
 
       if (!response.ok) {
@@ -558,19 +818,51 @@ export default class FlomoSync extends Plugin {
   }
 
 
-  createSign(username, password, timestamp) {
-    let words = `api_key=flomo_web&app_version=2.0&email=${username}&password=${password}&timestamp=${timestamp}&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
-    let sign = new Md5().appendStr(words).end();
-    // console.log(sign);
-    return sign;
-  }
+  // createSign(username, password, timestamp) {
+  //   let words = `api_key=flomo_web&app_version=2.0&email=${username}&password=${password}&timestamp=${timestamp}&webp=1dbbc3dd73364b4084c3a69346e0ce2b2`
+  //   let sign = new Md5().appendStr(words).end();
+  //   // console.log(sign);
+  //   return sign;
+  // }
 
+  createSign2(param){
+    //from flomo web
+    const SECRET = 'dbbc3dd73364b4084c3a69346e0ce2b2'
+    const sortParam = {};
+    Object.keys(param).sort().forEach(function(key) {
+      sortParam[key] = param[key];
+    });
+
+    let paramString = ''
+    for (let key in sortParam) {
+      let value = sortParam[key]
+      if (typeof value === 'undefined' || (!value && value !== 0)) continue
+
+      if (Array.isArray(value)) {
+        value.sort(function (a, b) {
+          return a && b ? a.toString().localeCompare(b.toString()) : 0
+        })
+
+        for (let index in value) {
+          let v = value[index]
+          paramString += key + '[]=' + v + '&'
+        }
+      } else {
+        paramString += key + '=' + value + '&'
+      }
+    }
+    paramString = paramString.substring(0, paramString.length - 1)
+    let sign = new Md5().appendStr(paramString + SECRET).end();
+    return sign
+  }
 
   async check_authorization_and_reconnect(resData) {
     // 检测到accessToken失效就提示，就重新登录
     if (resData.code == -10) {
       // 重新登录
       await this.connect();
+      await this.pushErrMsg(`正重新登录，请重新再试`);
+      return false;
     } else if (resData.code !== 0) {
       await this.pushErrMsg(`Server error! msg: ${resData.message}`);
       // throw new Error(`Server error! msg: ${resData.message}`);
