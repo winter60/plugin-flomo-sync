@@ -17,11 +17,12 @@ let onSyncEndEvent: EventListener;
 const STORAGE_NAME = "flomo-sync-config";
 const FLOMO_ASSETS_DIR = "assets/flomo";
 const USG = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36 Edg/116.0.1938.76";
-
-
+const flomoSvg = '<svg t="1701609878223" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4530" width="200" height="200"><path d="M0 0h1024v1024H0z" fill="#FAFAFA" p-id="4531"></path><path d="M709.461 507.212H332.07V399.559h447.497l-65.422 105.264c0 2.389-2.342 2.389-4.684 2.389z m98.143-167.462H450.067l65.441-105.273c2.342 0 4.675-2.39 7.016-2.39h355.177l-65.422 105.264c0 2.399-2.342 2.399-4.684 2.399z" fill="#30CF79" p-id="4532"></path><path d="M337.91 791.912c-105.159 0-191.62-88.519-191.62-196.181s86.461-196.172 191.62-196.172c105.15 0 191.621 88.51 191.621 196.172s-86.47 196.172-191.62 196.172z m0-282.31c-46.743 0-86.47 38.276-86.47 88.518 0 47.853 37.394 88.529 86.47 88.529 49.067 0 86.462-38.286 86.462-88.529-2.342-50.242-39.727-88.519-86.471-88.519z" fill="#30CF79" p-id="4533"></path></svg>'
+const outOfSyncSvg = '<svg t="1702561931653" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="17063" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="200"><path d="M624 706.3h-74.1V464c0-4.4-3.6-8-8-8h-60c-4.4 0-8 3.6-8 8v242.3H400c-6.7 0-10.4 7.7-6.3 12.9l112 141.7c3.2 4.1 9.4 4.1 12.6 0l112-141.7c4.1-5.2 0.4-12.9-6.3-12.9z" p-id="17064"></path><path d="M811.4 366.7C765.6 245.9 648.9 160 512.2 160S258.8 245.8 213 366.6C127.3 389.1 64 467.2 64 560c0 110.5 89.5 200 199.9 200H304c4.4 0 8-3.6 8-8v-60c0-4.4-3.6-8-8-8h-40.1c-33.7 0-65.4-13.4-89-37.7-23.5-24.2-36-56.8-34.9-90.6 0.9-26.4 9.9-51.2 26.2-72.1 16.7-21.3 40.1-36.8 66.1-43.7l37.9-9.9 13.9-36.6c8.6-22.8 20.6-44.1 35.7-63.4 14.9-19.2 32.6-35.9 52.4-49.9 41.1-28.9 89.5-44.2 140-44.2s98.9 15.3 140 44.2c19.9 14 37.5 30.8 52.4 49.9 15.1 19.3 27.1 40.7 35.7 63.4l13.8 36.5 37.8 10C846.1 454.5 884 503.8 884 560c0 33.1-12.9 64.3-36.3 87.7-23.4 23.4-54.5 36.3-87.6 36.3H720c-4.4 0-8 3.6-8 8v60c0 4.4 3.6 8 8 8h40.1C870.5 760 960 670.5 960 560c0-92.7-63.1-170.7-148.6-193.3z" p-id="17065"></path></svg>'
 export default class FlomoSync extends Plugin {
   private isMobile: boolean;
   private siyuanStorage;
+  private topBarElement;
   private syncing: boolean = false;
   async pushMsg(msg) {
     fetchPost("/api/notification/pushMsg", { msg: msg });
@@ -33,6 +34,27 @@ export default class FlomoSync extends Plugin {
 
   async getLocalStorage() {
     return await fetchSyncPost("/api/storage/getLocalStorage");
+  }
+
+  /**
+   * 
+   * @param type
+   * @returns 
+   */
+  getSvgHTML(type){
+    let svg;
+    if(type === "flomo"){
+      svg = flomoSvg
+    }else if(type === "outOfSync"){
+      svg = outOfSyncSvg
+    }else if(type === "iconRefresh"){
+      svg = '<svg><use xlink:href="#iconRefresh"></use></svg>'
+    } 
+
+    if(this.isMobile){
+     svg = svg + '<span class="b3-menu__label">flomo同步</span>'
+    }
+    return svg;
   }
 
 /**
@@ -184,14 +206,19 @@ export default class FlomoSync extends Plugin {
     }
 
     this.syncing = true;
+    let runBeforeSvg = this.topBarElement.innerHTML;
     try {
       await this.initData();
+
+      //正在执行的图标
+      this.topBarElement.innerHTML = this.getSvgHTML("iconRefresh")
       let memos = await this.getLatestMemos();
       // console.log(memos);      
       if (memos.length == 0) {
         let nowTimeText = moment().format('YYYY-MM-DD HH:mm:ss');
         console.warn("plugin-flomo-sync:" + "暂无新数据-" + nowTimeText)
         this.syncing = false;
+        this.topBarElement.innerHTML = this.getSvgHTML("flomo")
         return;
       }
 
@@ -208,7 +235,6 @@ export default class FlomoSync extends Plugin {
         handleContentSuccess = await this.writeSiyuan(contentArr);
       }
 
-      // todo 导致回写标签重复
       // 回写标签    
       if (handleContentSuccess && handleImgSuccess) {
         await this.writeBackTag(memos);
@@ -222,7 +248,12 @@ export default class FlomoSync extends Plugin {
         this.data[STORAGE_NAME]["lastSyncTime"] = nowTimeText;
         await this.saveData(STORAGE_NAME, this.data[STORAGE_NAME]);
       }, 1000)
+
+      //完成后图标
+      this.topBarElement.innerHTML = this.getSvgHTML("flomo")
     } catch (error) {
+      //报错图标就恢复成之前的状态
+      this.topBarElement.innerHTML = runBeforeSvg
       throw new Error(error)
       // this.syncing = false;
     } finally {
@@ -446,7 +477,17 @@ export default class FlomoSync extends Plugin {
    * @param detail 
    */
   async eventBusHandler(detail) {
-    await this.runSync();
+    // await this.runSync();
+    //获取flomo是否有新数据。
+    await this.checkNew()
+  }
+
+
+  async checkNew() {
+    let memos = await this.getLatestMemos();
+    if (memos.length > 0) {
+      this.topBarElement.innerHTML = this.getSvgHTML("outOfSync")
+    }
   }
 
 
@@ -459,7 +500,7 @@ export default class FlomoSync extends Plugin {
       password: "",//密码
       lastSyncTime: moment().format("YYYY-MM-DD 00:00:00"),//上次同步时间
       syncSuccessTag: "",//同步成功标签
-      isAutoSync: false,//是否绑定思源的同步
+      // isAutoSync: false,//是否绑定思源的同步
       accessToken: "",//accessToken
 
       locationMode: "0",
@@ -500,13 +541,13 @@ export default class FlomoSync extends Plugin {
     const frontEnd = getFrontend();
     this.isMobile = frontEnd === "mobile" || frontEnd === "browser-mobile";
     onSyncEndEvent = this.eventBusHandler.bind(this);
-    if (this.data[STORAGE_NAME].isAutoSync) {
+    // if (this.data[STORAGE_NAME].isAutoSync) {
       this.eventBus.on("sync-end", onSyncEndEvent);
-    }
+    // }
 
     // console.log(this.siyuanStorage);
-    const topBarElement = this.addTopBar({
-      icon: '<svg t="1701609878223" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="4530" width="200" height="200"><path d="M0 0h1024v1024H0z" fill="#FAFAFA" p-id="4531"></path><path d="M709.461 507.212H332.07V399.559h447.497l-65.422 105.264c0 2.389-2.342 2.389-4.684 2.389z m98.143-167.462H450.067l65.441-105.273c2.342 0 4.675-2.39 7.016-2.39h355.177l-65.422 105.264c0 2.399-2.342 2.399-4.684 2.399z" fill="#30CF79" p-id="4532"></path><path d="M337.91 791.912c-105.159 0-191.62-88.519-191.62-196.181s86.461-196.172 191.62-196.172c105.15 0 191.621 88.51 191.621 196.172s-86.47 196.172-191.62 196.172z m0-282.31c-46.743 0-86.47 38.276-86.47 88.518 0 47.853 37.394 88.529 86.47 88.529 49.067 0 86.462-38.286 86.462-88.529-2.342-50.242-39.727-88.519-86.471-88.519z" fill="#30CF79" p-id="4533"></path></svg>',
+    this.topBarElement = this.addTopBar({
+      icon: flomoSvg,
       title: "flomo同步",
       position: "right",
       callback: await this.runSync.bind(this),
@@ -514,7 +555,7 @@ export default class FlomoSync extends Plugin {
 
     let usernameElement = document.createElement("textarea");
     let passwordElement = document.createElement("textarea");
-    let isAutoSyncElement = document.createElement('input');
+    // let isAutoSyncElement = document.createElement('input');
     let lastSyncTimeElement = document.createElement('textarea');
     let syncSuccessTagElement = document.createElement('textarea');
     let accessTokenElement = document.createElement('textarea');
@@ -532,13 +573,13 @@ export default class FlomoSync extends Plugin {
       height: '500px',
       confirmCallback: async () => {
         let d = this.data[STORAGE_NAME];
-        if (isAutoSyncElement.checked != this.data[STORAGE_NAME].isAutoSync) {
-          if (isAutoSyncElement.checked) {
-            this.eventBus.on("sync-end", this.eventBusHandler);
-          } else {
-            this.eventBus.off("sync-end", this.eventBusHandler);
-          }
-        }
+        // if (isAutoSyncElement.checked != this.data[STORAGE_NAME].isAutoSync) {
+        //   if (isAutoSyncElement.checked) {
+        //     this.eventBus.on("sync-end", this.eventBusHandler.bind(this));
+        //   } else {
+        //     this.eventBus.off("sync-end", this.eventBusHandler.bind(this));
+        //   }
+        // }
 
         if (!pageIdElement.value && locationModeElement.value == "1") {
           this.pushErrMsg("同步到指定文档需要配置文档id")
@@ -566,7 +607,7 @@ export default class FlomoSync extends Plugin {
 
         d.username = usernameElement.value;
         d.password = passwordElement.value;
-        d.isAutoSync = isAutoSyncElement.checked;
+        // d.isAutoSync = isAutoSyncElement.checked;
         d.lastSyncTime = lastSyncTimeElement.value;
         d.syncSuccessTag = syncSuccessTagElement.value;
         d.accessToken = accessTokenElement.value;
@@ -603,16 +644,16 @@ export default class FlomoSync extends Plugin {
       },
     });
 
-    this.setting.addItem({
-      title: "是否自动同步",
-      description: "思源同步完成后自动同步flomo",
-      createActionElement: () => {
-        isAutoSyncElement.type = 'checkbox';
-        isAutoSyncElement.className = "b3-switch fn__flex-center";
-        isAutoSyncElement.checked = this.data[STORAGE_NAME].isAutoSync;
-        return isAutoSyncElement;
-      },
-    });
+    // this.setting.addItem({
+    //   title: "是否自动同步",
+    //   description: "思源同步完成后自动同步flomo",
+    //   createActionElement: () => {
+    //     isAutoSyncElement.type = 'checkbox';
+    //     isAutoSyncElement.className = "b3-switch fn__flex-center";
+    //     isAutoSyncElement.checked = this.data[STORAGE_NAME].isAutoSync;
+    //     return isAutoSyncElement;
+    //   },
+    // });
 
     let today = moment().format("YYYY-MM-DD 00:00:00");
     this.setting.addItem({
@@ -751,10 +792,12 @@ export default class FlomoSync extends Plugin {
       },
     });
 
+    //判断是否有新数据
+    await this.checkNew()
   }
 
   async onunload() {
-    this.eventBus.off("sync-end", this.eventBusHandler);
+    this.eventBus.off("sync-end", this.eventBusHandler.bind(this));
     this.syncing = false;
   }
 
