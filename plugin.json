@@ -2,7 +2,7 @@
   "name": "plugin-flomo-sync",
   "author": "winter60",
   "url": "https://github.com/winter60/plugin-flomo-sync",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "minAppVersion": "2.11.1",
   "backends": [
     "all"
